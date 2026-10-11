@@ -1,0 +1,18 @@
+# Never commit authentication material or retrieved student information.
+.env
+.env.*
+*.json
+!tests/fixtures/*.json
+*token*
+*credentials*
+*secret*
+*.sqlite3
+*.db
+chrome_profile/
+playwright/.auth/
+__pycache__/
+*.py[cod]
+*.zip
+.venv/
+venv/
+last_schedule.json
