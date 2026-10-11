@@ -492,8 +492,11 @@ def existing_google_events(service, calid):
     rows = []
     token = None
     while True:
-        page = service.events().list(calendarId=calid, maxResults=2500,
-                                     pageToken=token, showDeleted=False).execute()
+        try:
+            page = service.events().list(calendarId=calid, maxResults=2500,
+                                         pageToken=token, showDeleted=False).execute()
+        except Exception as exc:
+            raise RuntimeError(f"Google events.list başarısız: {safe_google_error(exc)}") from exc
         rows.extend(page.get("items", []))
         token = page.get("nextPageToken")
         if not token:
@@ -501,8 +504,20 @@ def existing_google_events(service, calid):
 
 
 def safe_google_error(exc):
+    """Only print an HTTP status and vetted Google reason; never a URL or token."""
     status = getattr(getattr(exc, "resp", None), "status", "?")
-    return f"Google Calendar API HTTP {status} ({type(exc).__name__})"
+    reason = "unknown"
+    try:
+        raw = getattr(exc, "content", b"")
+        parsed = json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
+        detail = parsed.get("error", {})
+        errors = detail.get("errors") or []
+        value = (errors[0].get("reason") if errors else None) or detail.get("status") or "unknown"
+        # Limit to a fixed-safe character set to keep private details out of public Actions logs.
+        reason = re.sub(r"[^a-zA-Z0-9_.-]", "", str(value))[:60] or "unknown"
+    except (TypeError, ValueError, AttributeError, KeyError):
+        pass
+    return f"Google Calendar API HTTP {status}; reason={reason}"
 
 
 def send_telegram(lines):
@@ -523,13 +538,18 @@ def send_telegram(lines):
 
 
 def sync_to_google(data, starts):
-    calid = os.environ.get("GOOGLE_CALENDAR_ID", "")
+    calid = os.environ.get("GOOGLE_CALENDAR_ID", "").strip()
     if not calid or calid == "primary":
         raise RuntimeError("GOOGLE_CALENDAR_ID eksik veya primary; sadece ayrı Vizja University takvimi desteklenir")
     service = google_service()
-    info = service.calendars().get(calendarId=calid).execute()
+    print("[Google] OAuth okundu; hedef takvim erişimi kontrol ediliyor.", flush=True)
+    try:
+        info = service.calendars().get(calendarId=calid).execute()
+    except Exception as exc:
+        raise RuntimeError(f"Google calendars.get başarısız: {safe_google_error(exc)}") from exc
     if info.get("summary") != "Vizja University":
         raise RuntimeError("Takvim adı Vizja University değil; yanlış takvime yazma ihtimaline karşı durduruldu")
+    print("[Google] Hedef takvim doğrulandı; mevcut etkinlikler okunuyor.", flush=True)
     existing = existing_google_events(service, calid)
     writes, deletes, notices = plan_changes(data, existing, starts)
     print(f"[Google] Ön kontrol: {len(writes)} ekleme/güncelleme; {len(deletes)} silme; {len(notices)} bildirim.")
