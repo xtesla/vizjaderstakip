@@ -251,12 +251,19 @@ def click_sis_anchor(context, candidate):
         anchor.click(timeout=4000, no_wait_after=True)
         print("[SSO] Bağlantıya tıklandı; Verbis sekmesi kontrol ediliyor (en fazla 65 sn).", flush=True)
     except Exception:
-        print("[SSO] Fare tıklaması engellendi; bağlantı klavyeyle açılacak.")
+        print("[SSO] Fare tıklaması engellendi; seçilen SIS bağlantısı DOM üzerinden açılıyor.", flush=True)
         try:
-            anchor.focus(timeout=3000)
-            page.keyboard.press("Enter")
-        except Exception as exc:
-            raise RuntimeError("SIS bağlantısı fare veya klavye ile açılamadı") from exc
+            # Clicking the previously identified real anchor runs the site's
+            # own handler. No cookies, credentials, or SSO URLs are extracted.
+            anchor.evaluate("(element) => element.click()", timeout=5000)
+            print("[SSO] SIS bağlantısı DOM üzerinden etkinleştirildi.", flush=True)
+        except Exception:
+            try:
+                anchor.focus(timeout=3000)
+                page.keyboard.press("Enter")
+                print("[SSO] SIS bağlantısı klavyeyle etkinleştirildi.", flush=True)
+            except Exception as exc:
+                raise RuntimeError("SIS bağlantısı fare, DOM veya klavye ile açılamadı") from exc
 
 
 
@@ -298,8 +305,9 @@ def auto_sign_in(context, username, password):
         raise RuntimeError("Extranet giriş formu kapanmadı. Şifre/CAPTCHA veya giriş engeli olabilir") from exc
     print("[SSO] Extranet giriş formu kapandı; yeni SIS bağlantısı aranıyor...")
 
-    # Wait for the centered SIS dialog to become interactive. Do not select
-    # a background duplicate while the modal is still being constructed.
+    # Prefer the SIS anchor inside the centered modal. Linux/Xvfb can
+    # report elementFromPoint() as blocked even when the anchor is visible;
+    # do not require unobstructed=True for modal links.
     deadline = time.monotonic() + 35
     first_seen = None
     chosen = None
@@ -308,17 +316,27 @@ def auto_sign_in(context, username, password):
         if candidates:
             if first_seen is None:
                 first_seen = time.monotonic()
-            # Prefer links that can actually receive a click; modal wins ties.
-            chosen = next((c for c in candidates if c[1]["unobstructed"] and c[1]["modal"]), None)
-            if chosen is None and not any(c[1]["modal"] for c in candidates):
-                chosen = next((c for c in candidates if c[1]["unobstructed"]), None)
-            if chosen and (chosen[1]["modal"] or time.monotonic() - first_seen >= 6):
-                print(f"[SSO] SIS bağlantı adayları: {len(candidates)}; modal içindeki bağlantı öncelikli.")
+            chosen = next((c for c in candidates if c[1]["modal"] and c[1]["exact"]), None)
+            if chosen is None:
+                chosen = next((c for c in candidates if c[1]["modal"]), None)
+            if chosen is not None:
+                print(f"[SSO] Modal SIS bağlantısı bulundu; aday sayısı: {len(candidates)}.", flush=True)
+                break
+            # Some Extranet themes use an unlabelled popup container. Allow
+            # the dialog to settle, then select the last exact SIS anchor:
+            # the dynamically appended popup link follows the page link.
+            if time.monotonic() - first_seen >= 5:
+                exact = [c for c in candidates if c[1]["exact"]]
+                if exact:
+                    chosen = max(exact, key=lambda c: c[1]["index"])
+                else:
+                    chosen = candidates[0]
+                print(f"[SSO] Modal işareti bulunmadı; {len(candidates)} görünür SIS bağlantısından biri seçildi.", flush=True)
                 break
         time.sleep(0.4)
-    if chosen is None or not chosen[1]["unobstructed"]:
+    if chosen is None:
         print_sis_diagnostics(context)
-        raise RuntimeError("SIS penceresinde erişilebilir bağlantı bulunamadı; güvenlik için otomatik tıklama yapılmadı")
+        raise RuntimeError("SIS bağlantısı DOM içinde bulunamadı; tıklama yapılmadı")
 
     try:
         click_sis_anchor(context, chosen)
