@@ -1,0 +1,56 @@
+name: Vizja Monitor — cloud
+
+on:
+  workflow_dispatch:
+    inputs:
+      login_test_only:
+        description: 'Test Extranet/Verbis sign-in only; do not change Calendar'
+        required: false
+        default: true
+        type: boolean
+  schedule:
+    - cron: '7,37 * * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vizja-cloud-monitor
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    if: github.event_name == 'workflow_dispatch' || vars.VIZJA_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      VIZJA_USERNAME: ${{ secrets.VIZJA_USERNAME }}
+      VIZJA_PASSWORD: ${{ secrets.VIZJA_PASSWORD }}
+      VIZJA_PERSON_ID: ${{ secrets.VIZJA_PERSON_ID }}
+      VIZJA_SEMESTER_ID: ${{ secrets.VIZJA_SEMESTER_ID }}
+      GOOGLE_TOKEN_JSON: ${{ secrets.GOOGLE_TOKEN_JSON }}
+      GOOGLE_CALENDAR_ID: ${{ secrets.GOOGLE_CALENDAR_ID }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+      - name: Install dependencies and X server
+        run: |
+          python -m pip install -r requirements.txt
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb
+          if ! command -v google-chrome >/dev/null 2>&1; then
+            python -m playwright install chrome
+          fi
+      - name: Test sign-in or sync
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.login_test_only }}" == "true" ]]; then
+            xvfb-run -a python cloud_monitor.py --login-test
+          else
+            xvfb-run -a python cloud_monitor.py --sync
+          fi
